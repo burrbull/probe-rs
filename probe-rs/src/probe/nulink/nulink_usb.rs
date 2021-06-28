@@ -796,7 +796,7 @@ impl NulinkUsbHandle {
 
 			/* the nulink only supports 8/32bit memory read/writes
 			 * honour 32bit, all others will be handled as 8bit access */
-			if (size == 4) {
+			if size == 4 {
 				/* When in jtag mode the nulink uses the auto-increment functionality.
 				 * However it expects us to pass the data correctly, this includes
 				 * alignment and any page boundaries. We already do this as part of the
@@ -816,13 +816,13 @@ impl NulinkUsbHandle {
 				}
 
 				if bytes_remaining % 4 != 0 {
-					nulink_usb_write_mem(handle, addr, 1, bytes_remaining, buffer)?;
+					self.usb_write_mem(addr, 1, bytes_remaining, buffer)?;
 				} else {
-					nulink_usb_write_mem32(handle, addr, bytes_remaining, buffer)?;
+					self.usb_write_mem32(addr, bytes_remaining, buffer)?;
 				}
 
 			} else {
-				nulink_usb_write_mem8(handle, addr, bytes_remaining, buffer)?;
+				self.usb_write_mem8(addr, bytes_remaining, buffer)?;
 			}
 
 			buffer += bytes_remaining;
@@ -832,6 +832,173 @@ impl NulinkUsbHandle {
 
 		Ok(())
 	}
+
+	pub fn nulink_speed(&self, khz: i32, query: bool) -> u64 {
+		debug!("nulink_speed: query {}", if query { "yes" } else { "no" });
+
+		let max_ice_clock = if khz > 12000 {
+			12000
+		} else if (khz == 3 * 512) || (khz == 1500) {
+			1500
+		} else if khz >= 1000 {
+			khz / 1000 * 1000 as u64
+		} else {
+			khz / 100 * 100 as u64
+		};
+
+		debug!("Nu-Link nulink_speed: {}", max_ice_clock);
+
+		if !query {
+			self.usb_init_buffer(4 * 6);
+			/* set command ID */
+			h_u32_to_le(self.cmdbuf + self.cmdidx, commands::SET_CONFIG);
+			self.cmdidx += 4;
+			/* set max SWD clock */
+			h_u32_to_le(self.cmdbuf + self.cmdidx, max_ice_clock);
+			self.cmdidx += 4;
+			/* chip type: NUC_CHIP_TYPE_GENERAL_V6M */
+			h_u32_to_le(self.cmdbuf + self.cmdidx, 0);
+			self.cmdidx += 4;
+			/* IO voltage */
+			h_u32_to_le(self.cmdbuf + self.cmdidx, 5000);
+			self.cmdidx += 4;
+			/* If supply voltage to target or not */
+			h_u32_to_le(self.cmdbuf + self.cmdidx, 0);
+			self.cmdidx += 4;
+			/* USB_FUNC_E: USB_FUNC_HID_BULK */
+			h_u32_to_le(self.cmdbuf + self.cmdidx, 2);
+			self.cmdidx += 4;
+
+			self.usb_xfer(self.databuf, 4 * 3);
+
+			debug!("nulink_speed: h->hardware_config({})", self.hardware_config);
+			if (self.hardware_config & HARDWARE_CONFIG_NULINKPRO)
+				info!("Nu-Link target_voltage_mv[0]({:04x}), target_voltage_mv[1]({:04x}), target_voltage_mv[2]({:04x}), if_target_power_supplied({})",
+					le_to_h_u16(self.databuf + 4 * 1 + 0),
+					le_to_h_u16(self.databuf + 4 * 1 + 2),
+					le_to_h_u16(self.databuf + 4 * 2 + 0),
+					le_to_h_u16(self.databuf + 4 * 2 + 2) & 1);
+		}
+
+		max_ice_clock
+	}
+}
+
+impl Drop for NulinkUsbHandle {
+	fn drop(&mut self) {
+		debug!("nulink_usb_close");
+	}
+}
+
+impl NulinkUsbHandle {
+	pub fn usb_open(struct hl_interface_param_s *param) -> Result<Box<NulinkUsbHandle>, NulinkError> {
+		use hidapi::HidApi;
+
+		struct hid_device_info *devs, *cur_dev;
+		let mut target_vid = 0;
+		let mut target_pid = 0;
+
+		debug!("nulink_usb_open");
+
+		if (param->transport != HL_TRANSPORT_SWD)
+			return TARGET_UNKNOWN;
+
+		if (!param->vid[0] && !param->pid[0]) != 0 {
+			error!("Missing vid/pid");
+			return Err(NulinkError::Fail);
+		}
+
+		let api = HidApi::new().map_err(|| {
+			error!("unable to open HIDAPI");
+			NulinkError::Fail
+		})?;
+
+		let mut target_serial = String::new();
+		if !param.serial.is_empty() {
+			target_serial = param.serial.to_string();
+		}
+
+		for cur_dev in api.device_list() {
+			let found = false;
+
+			let mut i = 0;
+			while param.vid[i] !=0 || param.pid[i] != 0 {
+				if param.vid[i] == cur_dev.vendor_id() && param.pid[i] == cur_dev.product_id() {
+					found = true;
+					break;
+				}
+				i += 1;
+			}
+
+			if found {
+				if target_serial.is_empty() {
+					target_vid = cur_dev.vendor_id();
+					target_pid = cur_dev.product_id();
+					break;
+				}
+				if cur_dev.serial_number() && target_serial == cur_dev.serial_number() {
+					target_vid = cur_dev.vendor_id();
+					target_pid = cur_dev.product_id();
+					break;
+				}
+			}
+		}
+
+		if target_vid == 0 && target_pid == 0 {
+			error!("unable to find Nu-Link");
+			return Err(NulinkError::Fail);
+		}
+
+		let dev = api.open_serial(target_vid, target_pid, target_serial).map_err(|| {
+			error!("unable to open Nu-Link device 0x{:x}:0x{:x}", target_vid, target_pid);
+			NulinkError::Fail
+		})?;
+
+		let h = Box::new(match target_pid {
+			NULINK2_USB_PID1 | NULINK2_USB_PID2 => {
+				NulinkUsbHandle {
+					dev_handle: dev,
+					usbcmdidx: 0,
+					hardware_config: HARDWARE_CONFIG_NULINK2,
+					max_packet_size: NULINK2_HID_MAX_SIZE,
+					init_buffer: nulink2_usb_init_buffer,
+					xfer = nulink2_usb_xfer,
+					cmdsize = 4 * 5,
+				}
+			}
+			_ => {
+				NulinkUsbHandle {
+					dev_handle: dev,
+					usbcmdidx: 0,
+					hardware_config: 0,
+					max_packet_size: NULINK_HID_MAX_SIZE,
+					init_buffer: nulink1_usb_init_buffer,
+					xfer = nulink1_usb_xfer,
+					cmdsize = 4 * 5,
+				}
+			}
+		});
+
+		/* get the device version */
+		if h.usb_version().is_err() {
+			debug!("nulink_usb_version failed with cmdSize(4 * 5)");
+			h.cmdsize = 4 * 6;
+			if h.usb_version().is_err() {
+				debug!("nulink_usb_version failed with cmdSize(4 * 6)");
+			}
+		}
+
+		/* SWD clock rate : 1MHz */
+		h.speed(h, 1000, false);
+
+		/* get cpuid, so we can determine the max page size
+		 * start with a safe default */
+		h.max_mem_packet = (1 << 10);
+
+		debug!("nulink_usb_open: we manually perform nulink_usb_reset");
+		h.usb_reset();
+
+		return Ok(h);
 }
 
 static int nulink_usb_override_target(const char *targetname)
@@ -839,207 +1006,6 @@ static int nulink_usb_override_target(const char *targetname)
     debug!("nulink_usb_override_target");
 
     return !strcmp(targetname, "cortex_m");
-}
-
-static int nulink_speed(handle: &NulinkUsbHandle, int khz, bool query)
-{
-    unsigned long max_ice_clock = khz;
-
-    debug!("nulink_speed: query {}", if query { "yes" } else { "no" });
-
-    if max_ice_clock > 12000 {
-        max_ice_clock = 12000;
-    } else if (max_ice_clock == 3 * 512) || (max_ice_clock == 1500) {
-        max_ice_clock = 1500;
-    } else if max_ice_clock >= 1000 {
-        max_ice_clock = max_ice_clock / 1000 * 1000;
-    } else {
-        max_ice_clock = max_ice_clock / 100 * 100;
-    }
-
-    debug!("Nu-Link nulink_speed: {}", max_ice_clock);
-
-    if !query {
-        nulink_usb_init_buffer(handle, 4 * 6);
-        /* set command ID */
-        h_u32_to_le(self.cmdbuf + self.cmdidx, commands::SET_CONFIG);
-        self.cmdidx += 4;
-        /* set max SWD clock */
-        h_u32_to_le(self.cmdbuf + self.cmdidx, max_ice_clock);
-        self.cmdidx += 4;
-        /* chip type: NUC_CHIP_TYPE_GENERAL_V6M */
-        h_u32_to_le(self.cmdbuf + self.cmdidx, 0);
-        self.cmdidx += 4;
-        /* IO voltage */
-        h_u32_to_le(self.cmdbuf + self.cmdidx, 5000);
-        self.cmdidx += 4;
-        /* If supply voltage to target or not */
-        h_u32_to_le(self.cmdbuf + self.cmdidx, 0);
-        self.cmdidx += 4;
-        /* USB_FUNC_E: USB_FUNC_HID_BULK */
-        h_u32_to_le(self.cmdbuf + self.cmdidx, 2);
-        self.cmdidx += 4;
-
-        nulink_usb_xfer(handle, self.databuf, 4 * 3);
-
-        debug!("nulink_speed: h->hardware_config({})", h.hardware_config);
-        if (self.hardware_config & HARDWARE_CONFIG_NULINKPRO)
-            info!("Nu-Link target_voltage_mv[0]({:04x}), target_voltage_mv[1]({:04x}), target_voltage_mv[2]({:04x}), if_target_power_supplied({})",
-                le_to_h_u16(self.databuf + 4 * 1 + 0),
-                le_to_h_u16(self.databuf + 4 * 1 + 2),
-                le_to_h_u16(self.databuf + 4 * 2 + 0),
-                le_to_h_u16(self.databuf + 4 * 2 + 2) & 1);
-    }
-
-    max_ice_clock
-}
-
-static int nulink_usb_close(handle: &NulinkUsbHandle)
-{
-    debug!("nulink_usb_close");
-
-    if (h && h->dev_handle) != 0 {
-        hid_close(h->dev_handle);
-    }
-
-    free(h);
-
-    hid_exit();
-
-    return ERROR_OK;
-}
-
-static int nulink_usb_open(struct hl_interface_param_s *param) -> Result<Box<NulinkUsbHandle>, NulinkError> {
-    struct hid_device_info *devs, *cur_dev;
-    uint16_t target_vid = 0;
-    uint16_t target_pid = 0;
-    wchar_t *target_serial = NULL;
-
-    debug!("nulink_usb_open");
-
-    if (param->transport != HL_TRANSPORT_SWD)
-        return TARGET_UNKNOWN;
-
-    if (!param->vid[0] && !param->pid[0]) != 0 {
-        error!("Missing vid/pid");
-        return ERROR_FAIL;
-    }
-
-    if hid_init() != 0 {
-        error!("unable to open HIDAPI");
-        return ERROR_FAIL;
-    }
-
-    struct NulinkUsbHandle *h = calloc(1, sizeof(*h));
-    if (!h) {
-        error!("Out of memory");
-        goto error_open;
-    }
-
-    if (param->serial) {
-        size_t len = mbstowcs(NULL, param->serial, 0);
-
-        target_serial = calloc(len + 1, sizeof(wchar_t));
-        if (!target_serial) {
-            error!("Out of memory");
-            goto error_open;
-        }
-
-        if (mbstowcs(target_serial, param->serial, len + 1) == (size_t)(-1)) {
-            warn!("unable to convert serial");
-            free(target_serial);
-            target_serial = NULL;
-        }
-    }
-
-    devs = hid_enumerate(0, 0);
-    cur_dev = devs;
-    while (cur_dev) {
-        bool found = false;
-
-        for (unsigned int i = 0; param->vid[i] || param->pid[i]; i++) {
-            if (param->vid[i] == cur_dev->vendor_id && param->pid[i] == cur_dev->product_id) {
-                found = true;
-                break;
-            }
-        }
-
-        if found {
-            if (!target_serial) {
-                break;
-            }
-            if (cur_dev->serial_number && wcscmp(target_serial, cur_dev->serial_number) == 0) {
-                break;
-            }
-        }
-
-        cur_dev = cur_dev->next;
-    }
-    if (cur_dev) {
-        target_vid = cur_dev->vendor_id;
-        target_pid = cur_dev->product_id;
-    }
-
-    hid_free_enumeration(devs);
-
-    if (target_vid == 0 && target_pid == 0) {
-        error!("unable to find Nu-Link");
-        goto error_open;
-    }
-
-    hid_device *dev = hid_open(target_vid, target_pid, target_serial);
-    if (!dev) {
-        error!("unable to open Nu-Link device 0x%" PRIx16 ":0x%" PRIx16, target_vid, target_pid);
-        goto error_open;
-    }
-
-    h->dev_handle = dev;
-    h->usbcmdidx = 0;
-
-    match target_pid {
-        NULINK2_USB_PID1 | NULINK2_USB_PID2 => {
-            h->hardware_config = HARDWARE_CONFIG_NULINK2;
-            h->max_packet_size = NULINK2_HID_MAX_SIZE;
-            h->init_buffer = nulink2_usb_init_buffer;
-            h->xfer = nulink2_usb_xfer;
-        }
-        _ => {
-            h->hardware_config = 0;
-            h->max_packet_size = NULINK_HID_MAX_SIZE;
-            h->init_buffer = nulink1_usb_init_buffer;
-            h->xfer = nulink1_usb_xfer;
-        }
-    }
-
-    /* get the device version */
-    h.cmdsize = 4 * 5;
-    int err = nulink_usb_version(h);
-    if (err != ERROR_OK) {
-        debug!("nulink_usb_version failed with cmdSize(4 * 5)");
-        h.cmdsize = 4 * 6;
-        err = nulink_usb_version(h);
-        if (err != ERROR_OK)
-            debug!("nulink_usb_version failed with cmdSize(4 * 6)");
-    }
-
-    /* SWD clock rate : 1MHz */
-    nulink_speed(h, 1000, false);
-
-    /* get cpuid, so we can determine the max page size
-     * start with a safe default */
-    h->max_mem_packet = (1 << 10);
-
-    debug!("nulink_usb_open: we manually perform nulink_usb_reset");
-    nulink_usb_reset(h);
-
-    free(target_serial);
-    return Ok(h);
-
-error_open:
-    nulink_usb_close(h);
-    free(target_serial);
-
-    return ERROR_FAIL;
 }
 
 struct hl_layout_api_s nulink_usb_layout_api = {
