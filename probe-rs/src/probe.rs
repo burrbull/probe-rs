@@ -533,6 +533,7 @@ pub enum DebugProbeType {
     Ftdi,
     StLink,
     JLink,
+    NuLink,
 }
 
 #[derive(Clone)]
