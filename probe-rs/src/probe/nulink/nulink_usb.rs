@@ -32,9 +32,11 @@
 
 #include <hidapi.h>
 */
+use scroll::{Pread, Pwrite, LE};
 
 pub enum NulinkError {
     Fail,
+    TargetUnknown,
 }
 
 const NULINK_READ_TIMEOUT: i32 = 1000;
@@ -112,7 +114,7 @@ pub enum TargetState {
 
 impl NulinkUsbHandle {
     pub fn usb_xfer_rw(&self, buf: &mut [u8]) -> Result<(), NulinkError> {
-        if hid_write(self.dev_handle, self.cmdbuf, h.max_packet_size + 1).is_err() {
+        if self.dev_handle.write(&self.cmdbuf[..h.max_packet_size + 1]).is_err() {
             error!("hid_write");
             return Err(NulinkError::Fail);
         }
@@ -125,7 +127,7 @@ impl NulinkUsbHandle {
     }
 }
 
-pub fn nulink1_usb_xfer(handle: &NulinkUsbHandle, buf: &mut [u8]) -> Result<(), NulinkError> {
+fn nulink1_usb_xfer(handle: &mut NulinkUsbHandle, buf: &mut [u8]) -> Result<(), NulinkError> {
     handle.usb_xfer_rw(handle.tempbuf)?;
 
     memcpy(buf, h.tempbuf + 2, V6M_MAX_COMMAND_LENGTH);
@@ -133,7 +135,7 @@ pub fn nulink1_usb_xfer(handle: &NulinkUsbHandle, buf: &mut [u8]) -> Result<(), 
     Ok(())
 }
 
-pub fn nulink2_usb_xfer(handle: &NulinkUsbHandle, buf: &mut [u8]) -> Result<(), NulinkError> {
+fn nulink2_usb_xfer(handle: &mut NulinkUsbHandle, buf: &mut [u8]) -> Result<(), NulinkError> {
     handle.usb_xfer_rw(handle.tempbuf)?;
 
     memcpy(buf, handle.tempbuf + 3, V7M_MAX_COMMAND_LENGTH);
@@ -141,7 +143,7 @@ pub fn nulink2_usb_xfer(handle: &NulinkUsbHandle, buf: &mut [u8]) -> Result<(), 
     Ok(())
 }
 
-pub fn nulink1_usb_init_buffer(handle: &NulinkUsbHandle, size: usize) {
+fn nulink1_usb_init_buffer(handle: &mut NulinkUsbHandle, size: usize) {
     handle.cmdidx = 0;
 
     let mps = handle.max_packet_size;
@@ -157,7 +159,7 @@ pub fn nulink1_usb_init_buffer(handle: &NulinkUsbHandle, size: usize) {
     handle.cmdidx += 3;
 }
 
-pub fn nulink2_usb_init_buffer(handle: &NulinkUsbHandle, size: usize) {
+fn nulink2_usb_init_buffer(handle: &mut NulinkUsbHandle, size: usize) {
     handle.cmdidx = 0;
 
     let mps = handle.max_packet_size;
@@ -174,28 +176,28 @@ pub fn nulink2_usb_init_buffer(handle: &NulinkUsbHandle, size: usize) {
 }
 
 impl NulinkUsbHandle {
-    pub fn usb_xfer(&self, buf: &mut [u8]) -> Result<(), NulinkError> {
+    pub fn usb_xfer(&mut self, buf: &mut [u8]) -> Result<(), NulinkError> {
         match self.version {
             Version::Nulink1 => nulink1_usb_xfer(self, buf),
             Version::Nulink2 => nulink2_usb_xfer(self, buf),
         }
     }
 
-    pub fn usb_init_buffer(&self, size: usize) {
+    pub fn usb_init_buffer(&mut self, size: usize) {
         match self.version {
             Version::Nulink1 => nulink1_usb_init_buffer(self, size),
             Version::Nulink2 => nulink2_usb_init_buffer(self, size),
         }
     }
 
-    pub fn usb_version(&self) -> Result<(), NulinkError> {
+    pub fn usb_version(&mut self) -> Result<(), NulinkError> {
         debug!("nulink_usb_version");
 
         self.usb_init_buffer(V6M_MAX_COMMAND_LENGTH);
 
         memset(self.cmdbuf + self.cmdidx, 0xFF, V6M_MAX_COMMAND_LENGTH);
-        self.cmdbuf[h->cmdidx + 4] = 0xA1; /* host_rev_num: 6561 */;
-        self.cmdbuf[h->cmdidx + 5] = 0x19;
+        self.cmdbuf[self.cmdidx + 4] = 0xA1; /* host_rev_num: 6561 */;
+        self.cmdbuf[self.cmdidx + 5] = 0x19;
 
         self.usb_xfer(self.databuf, self.cmdsize)?;
 
@@ -217,7 +219,7 @@ impl NulinkUsbHandle {
         Ok(())
     }
 
-    pub fn usb_idcode(&self) -> Result<u32, NulinkError> {
+    pub fn usb_idcode(&mut self) -> Result<u32, NulinkError> {
         debug!("nulink_usb_idcode");
 
         self.usb_init_buffer(4 * 1);
@@ -234,7 +236,7 @@ impl NulinkUsbHandle {
         Ok(idcode)
     }
 
-    pub fn usb_write_debug_reg(&self, addr: u32, val: u32) -> Result<(), NulinkError> {
+    pub fn usb_write_debug_reg(&mut self, addr: u32, val: u32) -> Result<(), NulinkError> {
         debug!("nulink_usb_write_debug_reg 0x{:08x} 0x{:08x}", addr, val);
 
         self.usb_init_buffer(8 + 12 * 1);
@@ -248,10 +250,10 @@ impl NulinkUsbHandle {
         self.cmdbuf[self.cmdidx] = 0x00;
         self.cmdidx += 1;
         /* Array of bool value (u8Verify) */
-        self.cmdbuf[h->cmdidx] = 0x00;
+        self.cmdbuf[self.cmdidx] = 0x00;
         self.cmdidx += 1;
         /* ignore */
-        self.cmdbuf[h->cmdidx] = 0;
+        self.cmdbuf[self.cmdidx] = 0;
         self.cmdidx += 1;
         /* u32Addr */
         h_u32_to_le(self.cmdbuf + self.cmdidx, addr);
@@ -266,7 +268,7 @@ impl NulinkUsbHandle {
         self.usb_xfer(self.databuf, 4 * 2)
     }
 
-    pub fn usb_state(&self) -> TargetState {
+    pub fn usb_state(&mut self) -> TargetState {
         self.usb_init_buffer(4 * 1);
         /* set command ID */
         h_u32_to_le(self.cmdbuf + self.cmdidx, commands::CHECK_MCU_STOP);
@@ -274,14 +276,14 @@ impl NulinkUsbHandle {
 
         if self.usb_xfer(self.databuf, 4 * 4).is_err() {
             TargetState::Unknown
-        } else if (!le_to_h_u32(h->databuf + 4 * 2)) {
+        } else if (!le_to_h_u32(self.databuf + 4 * 2)) {
             TargetState::Halted
         } else {
             TargetState::Running
         }
     }
 
-    pub fn usb_assert_srst(&self, int srst) -> Result<(), NulinkError> {
+    pub fn usb_assert_srst(&mut self, srst: i32) -> Result<(), NulinkError> {
         debug!("nulink_usb_assert_srst");
 
         self.usb_init_buffer(4 * 4);
@@ -301,7 +303,7 @@ impl NulinkUsbHandle {
         self.usb_xfer(self.databuf, 4 * 4)
     }
 
-    pub fn usb_reset(&self) -> Result<(), NulinkError> {
+    pub fn usb_reset(&mut self) -> Result<(), NulinkError> {
         debug!("nulink_usb_reset");
 
         self.usb_init_buffer(4 * 4);
@@ -321,7 +323,7 @@ impl NulinkUsbHandle {
         self.usb_xfer(self.databuf, 4 * 4)
     }
 
-    pub fn usb_run(&self) -> Result<(), NulinkError> {
+    pub fn usb_run(&mut self) -> Result<(), NulinkError> {
         debug!("nulink_usb_run");
 
         self.usb_init_buffer(4 * 1);
@@ -332,7 +334,7 @@ impl NulinkUsbHandle {
         self.usb_xfer(self.databuf, 4 * 4)
     }
 
-    pub fn usb_halt(&self) -> Result<(), NulinkError> {
+    pub fn usb_halt(&mut self) -> Result<(), NulinkError> {
         debug!("nulink_usb_halt");
 
         self.usb_init_buffer(4 * 1);
@@ -340,14 +342,14 @@ impl NulinkUsbHandle {
         h_u32_to_le(self.cmdbuf + self.cmdidx, commands::MCU_STOP_RUN);
         self.cmdidx += 4;
 
-        let res = self.usb_xfer(self.databuf, 4 * 4)
+        let res = self.usb_xfer(self.databuf, 4 * 4);
 
         debug!("Nu-Link stop_pc 0x{:08x}", le_to_h_u32(self.databuf + 4));
 
         res
     }
 
-    pub fn usb_step(&self) -> Result<(), NulinkError> {
+    pub fn usb_step(&mut self) -> Result<(), NulinkError> {
         debug!("nulink_usb_step");
 
         self.usb_init_buffer(4 * 1);
@@ -355,14 +357,14 @@ impl NulinkUsbHandle {
         h_u32_to_le(self.cmdbuf + self.cmdidx, commands::MCU_STEP_RUN);
         self.cmdidx += 4;
 
-        let res = self.usb_xfer(self.databuf, 4 * 4)
+        let res = self.usb_xfer(self.databuf, 4 * 4);
 
         debug!("Nu-Link pc 0x{:08x}", le_to_h_u32(self.databuf + 4));
 
         res
     }
 
-    pub fn usb_read_reg(&self, regsel: u32) -> Result<u32, NulinkError> {
+    pub fn usb_read_reg(&mut self, regsel: u32) -> Result<u32, NulinkError> {
         self.usb_init_buffer(8 + 12 * 1);
         /* set command ID */
         h_u32_to_le(self.cmdbuf + self.cmdidx, commands::WRITE_REG);
@@ -394,7 +396,7 @@ impl NulinkUsbHandle {
         Ok(le_to_h_u32(self.databuf + 4 * 1))
     }
 
-    pub fn usb_write_reg(&self, regsel: u32, val: u32) -> Result<(), NulinkError> {
+    pub fn usb_write_reg(&mut self, regsel: u32, val: u32) -> Result<(), NulinkError> {
         self.usb_init_buffer(8 + 12 * 1);
         /* set command ID */
         h_u32_to_le(self.cmdbuf + self.cmdidx, commands::WRITE_REG);
@@ -424,7 +426,7 @@ impl NulinkUsbHandle {
         self.usb_xfer(self.databuf, 4 * 2)
     }
 
-    pub fn usb_read_mem8(&self, addr: u32, buffer: &mut [u8]) -> Result<(), NulinkError> {
+    pub fn usb_read_mem8(&mut self, addr: u32, buffer: &mut [u8]) -> Result<(), NulinkError> {
         let mut offset = 0_u32;
         let mut bytes_remaining = 12_u32;
 
@@ -502,7 +504,7 @@ impl NulinkUsbHandle {
         Ok(())
     }
 
-    pub fn usb_write_mem8(&self, addr: u32, buffer: &[u8]) -> Result<(), NulinkError> {
+    pub fn usb_write_mem8(&mut self, addr: u32, buffer: &[u8]) -> Result<(), NulinkError> {
         let mut offset = 0_u32;
         let mut bytes_remaining = 12_u32;
 
@@ -552,8 +554,8 @@ impl NulinkUsbHandle {
                 h_u32_to_le(self.cmdbuf + self.cmdidx, addr);
                 self.cmdidx += 4;
                 /* u32Data */
-                uint32_t u32buffer = buf_get_u32(buffer, 0, len * 8);
-                u32buffer = (u32buffer << offset * 8);
+                let u32buffer = buf_get_u32(buffer, 0, len * 8);
+                let u32buffer = (u32buffer << offset * 8);
                 h_u32_to_le(self.cmdbuf + self.cmdidx, u32buffer);
                 self.cmdidx += 4;
                 /* u32Mask */
@@ -602,7 +604,7 @@ impl NulinkUsbHandle {
         Ok(())
     }
 
-    pub fn usb_read_mem32(&self, addr: u32, buffer: &mut [u8]) -> Result<(), NulinkError> {
+    pub fn usb_read_mem32(&mut self, addr: u32, buffer: &mut [u8]) -> Result<(), NulinkError> {
         let mut res = Ok(());
         let mut bytes_remaining = 12;
 
@@ -660,7 +662,7 @@ impl NulinkUsbHandle {
         res
     }
 
-    pub fn usb_write_mem32(&self, addr: u32, buffer: &[u8]) -> Result<(), NulinkError> {
+    pub fn usb_write_mem32(&mut self, addr: u32, buffer: &[u8]) -> Result<(), NulinkError> {
         let mut res = Ok(());
         let bytes_remaining = 12;
 
@@ -733,7 +735,7 @@ impl NulinkUsbHandle {
         max_tar_block
     }
 
-    pub fn usb_read_mem(&self, addr: u32, uint32_t size,
+    pub fn usb_read_mem(&mut self, addr: u32, uint32_t size,
             uint32_t count, uint8_t *buffer) -> Result<(), NulinkError> {
         /* calculate byte count */
         count *= size;
@@ -773,10 +775,10 @@ impl NulinkUsbHandle {
                 if bytes_remaining % 4 != 0 {
                     self.usb_read_mem(addr, 1, bytes_remaining, buffer)?;
                 } else {
-                    self.usb_read_mem32(addr, bytes_remaining, buffer)?;
+                    self.usb_read_mem32(addr, &mut buffer[..bytes_remaining])?;
                 }
             } else {
-                self.usb_read_mem8(addr, bytes_remaining, buffer)?;
+                self.usb_read_mem8(addr, &mut buffer[..bytes_remaining])?;
             }
 
             buffer += bytes_remaining;
@@ -787,7 +789,7 @@ impl NulinkUsbHandle {
         Ok(())
     }
 
-    pub fn usb_write_mem(&self, addr: u32, uint32_t size,
+    pub fn usb_write_mem(&mut self, addr: u32, uint32_t size,
             uint32_t count, const uint8_t *buffer) -> Result<(), NulinkError> {
         if (addr < ARM_SRAM_BASE) {
             debug!("nulink_usb_write_mem: address below ARM_SRAM_BASE, not supported.\n");
@@ -821,7 +823,7 @@ impl NulinkUsbHandle {
 
                 /* we first need to check for any unaligned bytes */
                 if addr % 4 != 0 {
-                    uint32_t head_bytes = 4 - (addr % 4);
+                    let head_bytes = 4 - (addr % 4);
                     self.usb_write_mem8(addr, head_bytes, buffer)?;
                     buffer += head_bytes;
                     addr += head_bytes;
@@ -847,7 +849,7 @@ impl NulinkUsbHandle {
         Ok(())
     }
 
-    pub fn nulink_speed(&self, khz: i32, query: bool) -> u64 {
+    pub fn nulink_speed(&mut self, khz: i32, query: bool) -> u64 {
         debug!("nulink_speed: query {}", if query { "yes" } else { "no" });
 
         let max_ice_clock = if khz > 12000 {
@@ -886,12 +888,13 @@ impl NulinkUsbHandle {
             self.usb_xfer(self.databuf, 4 * 3);
 
             debug!("nulink_speed: h->hardware_config({})", self.hardware_config);
-            if (self.hardware_config & HARDWARE_CONFIG_NULINKPRO)
+            if (self.hardware_config & HARDWARE_CONFIG_NULINKPRO) != 0 {
                 info!("Nu-Link target_voltage_mv[0]({:04x}), target_voltage_mv[1]({:04x}), target_voltage_mv[2]({:04x}), if_target_power_supplied({})",
                     le_to_h_u16(self.databuf + 4 * 1 + 0),
                     le_to_h_u16(self.databuf + 4 * 1 + 2),
                     le_to_h_u16(self.databuf + 4 * 2 + 0),
                     le_to_h_u16(self.databuf + 4 * 2 + 2) & 1);
+                }
         }
 
         max_ice_clock
@@ -908,16 +911,16 @@ impl NulinkUsbHandle {
     pub fn usb_open(struct hl_interface_param_s *param) -> Result<Box<NulinkUsbHandle>, NulinkError> {
         use hidapi::HidApi;
 
-        struct hid_device_info *devs, *cur_dev;
         let mut target_vid = 0;
         let mut target_pid = 0;
 
         debug!("nulink_usb_open");
 
-        if (param->transport != HL_TRANSPORT_SWD)
-            return TARGET_UNKNOWN;
+        if param.transport != HL_TRANSPORT_SWD {
+            return Err(NulinkError::TargetUnknown);
+        }
 
-        if (!param->vid[0] && !param->pid[0]) != 0 {
+        if (!param.vid[0] && !param.pid[0]) != 0 {
             error!("Missing vid/pid");
             return Err(NulinkError::Fail);
         }
@@ -976,7 +979,7 @@ impl NulinkUsbHandle {
                     hardware_config: HARDWARE_CONFIG_NULINK2,
                     max_packet_size: NULINK2_HID_MAX_SIZE,
                     version: Version::Nulink2,
-                    cmdsize = 4 * 5,
+                    cmdsize: 4 * 5,
                 }
             }
             _ => {
@@ -986,7 +989,7 @@ impl NulinkUsbHandle {
                     hardware_config: 0,
                     max_packet_size: NULINK_HID_MAX_SIZE,
                     version: Version::Nulink1,
-                    cmdsize = 4 * 5,
+                    cmdsize: 4 * 5,
                 }
             }
         });
@@ -1011,6 +1014,7 @@ impl NulinkUsbHandle {
         h.usb_reset();
 
         return Ok(h);
+    }
 }
 /*
 static int nulink_usb_override_target(const char *targetname)
@@ -1039,3 +1043,75 @@ struct hl_layout_api_s nulink_usb_layout_api = {
     .speed = nulink_speed,
 };
 */
+
+
+
+impl DebugProbe for StLink<StLinkUsbDevice> {
+    fn new_from_selector(
+        selector: impl Into<DebugProbeSelector>,
+    ) -> Result<Box<Self>, DebugProbeError> {
+        todo!()
+    }
+
+    fn get_name(&self) -> &str {
+        todo!()
+    }
+
+    fn speed(&self) -> u32 {
+        todo!()
+    }
+
+    fn set_speed(&mut self, speed_khz: u32) -> Result<u32, DebugProbeError> {
+        todo!()
+    }
+
+    fn attach(&mut self) -> Result<(), DebugProbeError> {
+        todo!()
+    }
+
+    fn detach(&mut self) -> Result<(), DebugProbeError> {
+        todo!()
+    }
+
+    fn target_reset(&mut self) -> Result<(), DebugProbeError> {
+        todo!()
+    }
+
+    fn target_reset_assert(&mut self) -> Result<(), DebugProbeError> {
+        todo!()
+    }
+
+    fn target_reset_deassert(&mut self) -> Result<(), DebugProbeError> {
+        todo!()
+    }
+
+    fn select_protocol(&mut self, protocol: WireProtocol) -> Result<(), DebugProbeError> {
+        todo!()
+    }
+
+    fn get_swo_interface(&self) -> Option<&dyn SwoAccess> {
+        todo!()
+    }
+
+    fn get_swo_interface_mut(&mut self) -> Option<&mut dyn SwoAccess> {
+        todo!()
+    }
+
+    fn has_arm_interface(&self) -> bool {
+        true
+    }
+
+    fn into_probe(self: Box<Self>) -> Box<dyn DebugProbe> {
+        todo!()
+    }
+
+    fn try_get_arm_interface<'probe>(
+        self: Box<Self>,
+    ) -> Result<Box<dyn ArmProbeInterface + 'probe>, (Box<dyn DebugProbe>, DebugProbeError)> {
+        todo!()
+    }
+
+    fn get_target_voltage(&mut self) -> Result<Option<f32>, DebugProbeError> {
+        todo!()
+    }
+}
