@@ -92,16 +92,35 @@ pub enum NulinkReset {
     HW = 1,
     SysResetReq = 2,
     VectReset = 3,
-    FastRescue = 4, /* Rescue and erase the chip, need very fast speed */
+    FastRescue = 4, // Rescue and erase the chip, need very fast speed
 }
 
 pub enum NulinkConnect {
-    Normal = 0,      /* Support all reset method */
-    PreReset = 1,   /* Support all reset method */
-    UnderReset = 2, /* Support all reset method */
-    None = 3,        /* Support RESET_HW, (RESET_AUTO = RESET_HW) */
-    Disconnect = 4,  /* Support RESET_NONE, (RESET_AUTO = RESET_NONE) */
-    IcpMode = 5     /* Support NUC505 ICP mode*/
+    Normal = 0,      // Support all reset method
+    PreReset = 1,   // Support all reset method
+    UnderReset = 2, // Support all reset method
+    None = 3,        // Support RESET_HW, (RESET_AUTO = RESET_HW)
+    Disconnect = 4,  // Support RESET_NONE, (RESET_AUTO = RESET_NONE)
+    IcpMode = 5     // Support NUC505 ICP mode
+}
+
+fn buf_get_u32(buffer: &[u8],
+	first: usize, num: usize) -> u32 {
+
+	if (num == 32) != 0 && (first == 0) != 0 {
+		return ((buffer[3] as u32) << 24) |
+				((buffer[2] as u32) << 16) |
+				((buffer[1] as u32) << 8) |
+				((buffer[0] as u32) << 0);
+	} else {
+		let mut result = 0_u32;
+		for i in first..first + num {
+			if ((buffer[i / 8] >> (i % 8)) & 1) == 1 {
+				result |= 1_u32 << i - first;
+			}
+		}
+		return result;
+	}
 }
 
 // ???????/
