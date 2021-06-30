@@ -59,7 +59,6 @@ struct NulinkUsbHandle {
     dev_handle: hidapi::HidDevice,
     max_packet_size: u16,
     usbcmdidx: u8,
-    cmdidx: u8,
     cmdsize: u8,
     cmdbuf: [u8; NULINK2_HID_MAX_SIZE + 1],
     tempbuf: [u8; NULINK2_HID_MAX_SIZE],
@@ -70,17 +69,17 @@ struct NulinkUsbHandle {
 
 /* ICE Command */
 pub mod commands {
-    pub const READ_REG: u8 = 0xB5;
-    pub const READ_RAM: u8 = 0xB1;
-    pub const WRITE_REG: u8 = 0xB8;
-    pub const WRITE_RAM: u8 = 0xB9;
-    pub const CHECK_ID: u8 = 0xA3;
-    pub const MCU_RESET: u8 = 0xE2;
-    pub const CHECK_MCU_STOP: u8 = 0xD8;
-    pub const MCU_STEP_RUN: u8 = 0xD1;
-    pub const MCU_STOP_RUN: u8 = 0xD2;
-    pub const MCU_FREE_RUN: u8 = 0xD3;
-    pub const SET_CONFIG: u8 = 0xA2;
+    pub const READ_REG: u32 = 0xB5;
+    pub const READ_RAM: u32 = 0xB1;
+    pub const WRITE_REG: u32 = 0xB8;
+    pub const WRITE_RAM: u32 = 0xB9;
+    pub const CHECK_ID: u32 = 0xA3;
+    pub const MCU_RESET: u32 = 0xE2;
+    pub const CHECK_MCU_STOP: u32 = 0xD8;
+    pub const MCU_STEP_RUN: u32 = 0xD1;
+    pub const MCU_STOP_RUN: u32 = 0xD2;
+    pub const MCU_FREE_RUN: u32 = 0xD3;
+    pub const SET_CONFIG: u32 = 0xA2;
 }
 
 const ARM_SRAM_BASE: u32 = 0x20000000;
@@ -140,8 +139,6 @@ fn nulink2_usb_xfer(handle: &mut NulinkUsbHandle, _cmdsize: usize) -> Result<&[u
 }
 
 fn nulink1_usb_init_buffer(handle: &mut NulinkUsbHandle, size: usize) -> usize {
-    handle.cmdidx = 0;
-
     let mps = handle.max_packet_size;
 
     handle.cmdbuf[..mps + 1].fill(0);
@@ -151,13 +148,10 @@ fn nulink1_usb_init_buffer(handle: &mut NulinkUsbHandle, size: usize) -> usize {
     handle.usbcmdidx += 1;
     handle.cmdbuf[1] = handle.usbcmdidx & 0x7F;
     handle.cmdbuf[2] = size;
-    handle.cmdidx += 3;
     3
 }
 
 fn nulink2_usb_init_buffer(handle: &mut NulinkUsbHandle, size: usize) -> usize {
-    handle.cmdidx = 0;
-
     let mps = handle.max_packet_size;
 
     memset(handle.cmdbuf, 0, mps + 1);
@@ -166,8 +160,7 @@ fn nulink2_usb_init_buffer(handle: &mut NulinkUsbHandle, size: usize) -> usize {
     handle.cmdbuf[0] = 0; /* report number */
     handle.usbcmdidx += 1;
     handle.cmdbuf[1] = handle.usbcmdidx & 0x7F;
-    h_u16_to_le(handle.cmdbuf + 2, size);
-    handle.cmdidx += 4;
+    handle.cmdbuf.pwrite_with(2, size, LE).unwrap();
     4
 }
 
@@ -219,7 +212,7 @@ impl NulinkUsbHandle {
         debug!("nulink_usb_idcode");
 
         let cmdidx = self.usb_init_buffer(4 * 1);
-        self.cmdbuf.pwrite_with(cmdidx, commands::CHECK_ID as u32, LE).unwrap(); // set command ID
+        self.cmdbuf.pwrite_with(cmdidx, commands::CHECK_ID, LE).unwrap(); // set command ID
 
         let databuf = self.usb_xfer(4 * 2)?;
 
@@ -235,7 +228,7 @@ impl NulinkUsbHandle {
 
         let cmdidx = self.usb_init_buffer(8 + 12 * 1);
         let mut cmdbuf = Cursor::new(&mut self.cmdbuf[cmdidx..]);
-        cmdbuf.iowrite_with(commands::WRITE_RAM as u32, LE).unwrap(); // set command ID
+        cmdbuf.iowrite_with(commands::WRITE_RAM, LE).unwrap(); // set command ID
         cmdbuf.iowrite(1_u8).unwrap(); // Count of registers
         cmdbuf.iowrite(0x00_u8).unwrap(); // Array of bool value (u8ReadOld)
         cmdbuf.iowrite(0x00_u8).unwrap(); // Array of bool value (u8Verify)
@@ -249,7 +242,7 @@ impl NulinkUsbHandle {
 
     pub fn usb_state(&mut self) -> TargetState {
         let cmdidx = self.usb_init_buffer(4 * 1);
-        self.cmdbuf.pwrite_with(cmdidx, commands::CHECK_MCU_STOP as u32); // set command ID
+        self.cmdbuf.pwrite_with(cmdidx, commands::CHECK_MCU_STOP, LE); // set command ID
 
         if let Ok(databuf) = self.usb_xfer(4 * 4).is_err() {
             if databuf.pread_with::<u32>(8, LE).unwrap() == 0 {
@@ -267,7 +260,7 @@ impl NulinkUsbHandle {
 
         let cmdidx = self.usb_init_buffer(4 * 4);
         let mut cmdbuf = Cursor::new(&mut self.cmdbuf[cmdidx..]);
-        cmdbuf.iowrite_with(commands::MCU_RESET as u32, LE).unwrap(); // set command ID
+        cmdbuf.iowrite_with(commands::MCU_RESET, LE).unwrap(); // set command ID
         cmdbuf.iowrite_with(RESET_SYSRESETREQ as u32, LE).unwrap(); // set reset type
         cmdbuf.iowrite_with(CONNECT_NORMAL as u32, LE).unwrap(); // set connect type
         cmdbuf.iowrite_with(0_u32).unwrap(); // set extMode
@@ -280,7 +273,7 @@ impl NulinkUsbHandle {
 
         let cmdidx = self.usb_init_buffer(4 * 4);
         let mut cmdbuf = Cursor::new(&mut self.cmdbuf[cmdidx..]);
-        cmdbuf.iowrite_with(commands::MCU_RESET as u32, LE).unwrap(); // set command ID
+        cmdbuf.iowrite_with(commands::MCU_RESET, LE).unwrap(); // set command ID
         cmdbuf.iowrite_with(RESET_HW as u32, LE).unwrap(); // set reset type
         cmdbuf.iowrite_with(CONNECT_NORMAL as u32, LE).unwrap(); // set connect type
         cmdbuf.iowrite_with(0_u32, LE).unwrap(); // set extMode
@@ -292,7 +285,7 @@ impl NulinkUsbHandle {
         debug!("nulink_usb_run");
 
         let cmdidx = self.usb_init_buffer(4 * 1);
-        self.cmdbuf.pwrite_with(cmdidx, commands::MCU_FREE_RUN as u32, LE).unwrap(); // set command ID
+        self.cmdbuf.pwrite_with(cmdidx, commands::MCU_FREE_RUN, LE).unwrap(); // set command ID
 
         self.usb_xfer(4 * 4)
     }
@@ -301,7 +294,7 @@ impl NulinkUsbHandle {
         debug!("nulink_usb_halt");
 
         let cmdidx = self.usb_init_buffer(4 * 1);
-        self.cmdbuf.pwrite_with(cmdidx, commands::MCU_STOP_RUN as u32, LE).unwrap(); // set command ID
+        self.cmdbuf.pwrite_with(cmdidx, commands::MCU_STOP_RUN, LE).unwrap(); // set command ID
 
         let databuf = self.usb_xfer(4 * 4)?;
 
@@ -314,7 +307,7 @@ impl NulinkUsbHandle {
         debug!("nulink_usb_step");
 
         let cmdidx = self.usb_init_buffer(4 * 1);
-        self.cmdbuf.pwrite_with(cmdidx, commands::MCU_STEP_RUN as u32, LE).unwrap(); // set command ID
+        self.cmdbuf.pwrite_with(cmdidx, commands::MCU_STEP_RUN, LE).unwrap(); // set command ID
 
         let databuf = self.usb_xfer(4 * 4)?;
 
@@ -324,31 +317,16 @@ impl NulinkUsbHandle {
     }
 
     pub fn usb_read_reg(&mut self, regsel: u32) -> Result<u32, NulinkError> {
-        self.usb_init_buffer(8 + 12 * 1);
-        /* set command ID */
-        h_u32_to_le(self.cmdbuf + self.cmdidx, commands::WRITE_REG);
-        self.cmdidx += 4;
-        /* Count of registers */
-        self.cmdbuf[self.cmdidx] = 1;
-        self.cmdidx += 1;
-        /* Array of bool value (u8ReadOld) */
-        self.cmdbuf[self.cmdidx] = 0xFF;
-        self.cmdidx += 1;
-        /* Array of bool value (u8Verify) */
-        self.cmdbuf[self.cmdidx] = 0x00;
-        self.cmdidx += 1;
-        /* ignore */
-        self.cmdbuf[self.cmdidx] = 0;
-        self.cmdidx += 1;
-        /* u32Addr */
-        h_u32_to_le(self.cmdbuf + self.cmdidx, regsel);
-        self.cmdidx += 4;
-        /* u32Data */
-        h_u32_to_le(self.cmdbuf + self.cmdidx, 0);
-        self.cmdidx += 4;
-        /* u32Mask */
-        h_u32_to_le(self.cmdbuf + self.cmdidx, 0xFFFFFFFF);
-        self.cmdidx += 4;
+        let cmdidx = self.usb_init_buffer(8 + 12 * 1);
+		let mut cmdbuf = Cursor::new(&mut self.cmdbuf[cmdidx..]);
+		cmdbuf.iowrite_with(commands::WRITE_REG, LE).unwrap(); // set command ID
+		cmdbuf.iowrite(1_u8).unwrap(); // Count of registers
+        cmdbuf.iowrite(0xFF_u8).unwrap(); // Array of bool value (u8ReadOld)
+        cmdbuf.iowrite(0x00_u8).unwrap(); // Array of bool value (u8Verify)
+        cmdbuf.iowrite(0_u8).unwrap(); // ignore
+        cmdbuf.iowrite_with(regsel, LE).unwrap(); // u32Addr
+        cmdbuf.iowrite_with(0_u32, LE).unwrap(); // u32Data
+        cmdbuf.iowrite_with(0xFFFFFFFF_u32, LE).unwrap(); // u32Mask
 
         let databuf = self.usb_xfer(4 * 2)?;
 
@@ -356,33 +334,19 @@ impl NulinkUsbHandle {
     }
 
     pub fn usb_write_reg(&mut self, regsel: u32, val: u32) -> Result<(), NulinkError> {
-        self.usb_init_buffer(8 + 12 * 1);
-        /* set command ID */
-        h_u32_to_le(self.cmdbuf + self.cmdidx, commands::WRITE_REG);
-        self.cmdidx += 4;
-        /* Count of registers */
-        self.cmdbuf[self.cmdidx] = 1;
-        self.cmdidx += 1;
-        /* Array of bool value (u8ReadOld) */
-        self.cmdbuf[self.cmdidx] = 0x00;
-        self.cmdidx += 1;
-        /* Array of bool value (u8Verify) */
-        self.cmdbuf[self.cmdidx] = 0x00;
-        self.cmdidx += 1;
-        /* ignore */
-        self.cmdbuf[self.cmdidx] = 0;
-        self.cmdidx += 1;
-        /* u32Addr */
-        h_u32_to_le(self.cmdbuf + self.cmdidx, regsel);
-        self.cmdidx += 4;
-        /* u32Data */
-        h_u32_to_le(self.cmdbuf + self.cmdidx, val);
-        self.cmdidx += 4;
-        /* u32Mask */
-        h_u32_to_le(self.cmdbuf + self.cmdidx, 0x00000000);
-        self.cmdidx += 4;
+        let cmdidx = self.usb_init_buffer(8 + 12 * 1);
+		let mut cmdbuf = Cursor::new(&mut self.cmdbuf[cmdidx..]);
+		cmdbuf.iowrite_with(commands::WRITE_REG, LE).unwrap(); // set command ID
+		cmdbuf.iowrite(1_u8).unwrap(); // Count of registers
+        cmdbuf.iowrite(0x00_u8).unwrap(); // Array of bool value (u8ReadOld)
+        cmdbuf.iowrite(0x00_u8).unwrap(); // Array of bool value (u8Verify)
+        cmdbuf.iowrite(0_u8).unwrap(); // ignore
+        cmdbuf.iowrite_with(regsel, LE).unwrap(); // u32Addr
+        cmdbuf.iowrite_with(val, LE).unwrap(); // u32Data
+        cmdbuf.iowrite_with(0x00000000_u32, LE).unwrap(); // u32Mask
 
-        self.usb_xfer(4 * 2)
+        self.usb_xfer(4 * 2)?;
+        Ok(())
     }
 
     pub fn usb_read_mem8(&mut self, addr: u32, buffer: &mut [u8]) -> Result<(), NulinkError> {
@@ -413,45 +377,31 @@ impl NulinkUsbHandle {
                 2
             };
 
-            self.usb_init_buffer(8 + 12 * count);
-            /* set command ID */
-            h_u32_to_le(self.cmdbuf + self.cmdidx, commands::WRITE_RAM);
-            self.cmdidx += 4;
-            /* Count of registers */
-            self.cmdbuf[self.cmdidx] = count;
-            self.cmdidx += 1;
-            /* Array of bool value (u8ReadOld) */
-            self.cmdbuf[self.cmdidx] = 0xFF;
-            self.cmdidx += 1;
-            /* Array of bool value (u8Verify) */
-            self.cmdbuf[self.cmdidx] = 0x00;
-            self.cmdidx += 1;
-            /* ignore */
-            self.cmdbuf[self.cmdidx] = 0;
-            self.cmdidx += 1;
+            let cmdidx = self.usb_init_buffer(8 + 12 * count);
+			let mut cmdbuf = Cursor::new(&mut self.cmdbuf[cmdidx..]);
+			cmdbuf.iowrite_with(commands::WRITE_RAM, LE).unwrap(); // set command ID
+            cmdbuf.iowrite(count as u8).unwrap(); // Count of registers
+            cmdbuf.iowrite(0xFF_u8).unwrap(); // Array of bool value (u8ReadOld)
+            cmdbuf.iowrite(0x00_u8).unwrap(); // Array of bool value (u8Verify)
+            cmdbuf.iowrite(0_u8).unwrap(); // ignore
 
             for i in 0..count {
-                /* u32Addr */
-                h_u32_to_le(self.cmdbuf + self.cmdidx, addr);
-                self.cmdidx += 4;
-                /* u32Data */
-                h_u32_to_le(self.cmdbuf + self.cmdidx, 0);
-                self.cmdidx += 4;
-                /* u32Mask */
-                h_u32_to_le(self.cmdbuf + self.cmdidx, 0xFFFFFFFF);
-                self.cmdidx += 4;
-                /* proceed to the next one  */
-                addr += 4;
+                cmdbuf.iowrite_with(addr, LE).unwrap(); // u32Addr
+                cmdbuf.iowrite_with(0_u32).unwrap(); // u32Data
+                cmdbuf.iowrite_with(0xFFFFFFFF_u32).unwrap(); // u32Mask
+                addr += 4; // proceed to the next one
             }
 
             let databuf = self.usb_xfer(4 * count * 2)?;
 
-            /* fill in the output buffer */
+            // fill in the output buffer
             for i in 0..count {
                 if i == 0 {
-                    memcpy(buffer, databuf + 4 + offset, len);
+					buffer[..len].copy_from_slice(&databuf[4 + offset..4 + offset+len]);
                 } else {
-                    memcpy(buffer + 2 * i, databuf + 4 * (2 * i + 1), len - 2);
+					buffer[2 * i..2 * i + len - 2].copy_from_slice(
+						&databuf[4 * (2 * i + 1), 4 * (2 * i + 1) + len - 2]
+					);
                 }
             }
 
@@ -491,64 +441,50 @@ impl NulinkUsbHandle {
                 2
             };
 
-            self.usb_init_buffer(8 + 12 * count);
-            /* set command ID */
-            h_u32_to_le(self.cmdbuf + self.cmdidx, commands::WRITE_RAM);
-            self.cmdidx += 4;
-            /* Count of registers */
-            self.cmdbuf[self.cmdidx] = count;
-            self.cmdidx += 1;
-            /* Array of bool value (u8ReadOld) */
-            self.cmdbuf[self.cmdidx] = 0x00;
-            self.cmdidx += 1;
-            /* Array of bool value (u8Verify) */
-            self.cmdbuf[self.cmdidx] = 0x00;
-            self.cmdidx += 1;
-            /* ignore */
-            self.cmdbuf[self.cmdidx] = 0;
-            self.cmdidx += 1;
+            let cmdidx = self.usb_init_buffer(8 + 12 * count);
+			let mut cmdbuf = Cursor::new(&mut self.cmdbuf[cmdidx..]);
+			cmdbuf.iowrite_with(commands::WRITE_RAM, LE).unwrap(); // set command ID
+            cmdbuf.iowrite(count as u8).unwrap(); // Count of registers
+			cmdbuf.iowrite(0x00_u8).unwrap(); // Array of bool value (u8ReadOld)
+			cmdbuf.iowrite(0x00_u8).unwrap(); // Array of bool value (u8Verify)
+            cmdbuf.iowrite(0_u8).unwrap(); // ignore
 
             for i in 0..count {
-                /* u32Addr */
-                h_u32_to_le(self.cmdbuf + self.cmdidx, addr);
-                self.cmdidx += 4;
-                /* u32Data */
+                cmdbuf.iowrite_with(addr, LE).unwrap(); // u32Addr
                 let u32buffer = buf_get_u32(buffer, 0, len * 8);
                 let u32buffer = (u32buffer << offset * 8);
-                h_u32_to_le(self.cmdbuf + self.cmdidx, u32buffer);
-                self.cmdidx += 4;
-                /* u32Mask */
+                cmdbuf.iowrite_with(u32buffer, LE).unwrap(); // u32Data
+                // u32Mask
                 if i == 0 {
                     if offset == 0 {
                         if len == 1 {
-                            h_u32_to_le(self.cmdbuf + self.cmdidx, 0xFFFFFF00);
+                            cmdbuf.iowrite_with(0xFFFFFF00_u32).unwrap();
                             debug!("nulink_usb_write_mem8: count({}), mask: 0xFFFFFF00", i);
                         } else {
-                            h_u32_to_le(self.cmdbuf + self.cmdidx, 0xFFFF0000);
+                            cmdbuf.iowrite_with(0xFFFF0000_u32).unwrap();
                             debug!("nulink_usb_write_mem8: count({}), mask: 0xFFFF0000", i);
                         }
                     } else {
                         if len == 1 {
-                            h_u32_to_le(self.cmdbuf + self.cmdidx, 0xFF00FFFF);
+                            cmdbuf.iowrite_with(0xFF00FFFF).unwrap();
                             debug!("nulink_usb_write_mem8: count({}), mask: 0xFF00FFFF", i);
 
                         } else {
-                            h_u32_to_le(self.cmdbuf + self.cmdidx, 0x0000FFFF);
+                            cmdbuf.iowrite_with(0x0000FFFF).unwrap();
                             debug!("nulink_usb_write_mem8: count({}), mask: 0x0000FFFF", i);
                         }
                     }
                 } else {
                     if len == 4 {
-                        h_u32_to_le(self.cmdbuf + self.cmdidx, 0xFFFF0000);
+                        cmdbuf.iowrite_with(0xFFFF0000).unwrap();
                         debug!("nulink_usb_write_mem8: count({}), mask: 0xFFFF0000", i);
                     } else {
-                        h_u32_to_le(self.cmdbuf + self.cmdidx, 0x00000000);
+                        cmdbuf.iowrite_with(0x00000000).unwrap();
                         debug!("nulink_usb_write_mem8: count({}), mask: 0x00000000", i);
                     }
                 }
-                self.cmdidx += 4;
 
-                /* proceed to the next one */
+                // proceed to the next one
                 addr += 4;
                 buffer += 4;
             }
@@ -567,7 +503,7 @@ impl NulinkUsbHandle {
         let mut buffer = buffer;
         let mut bytes_remaining = 12;
 
-        /* data must be a multiple of 4 and word aligned */
+        // data must be a multiple of 4 and word aligned
         if (len % 4 || addr % 4) != 0 {
             error!("Invalid data alignment");
             return ERROR_TARGET_UNALIGNED_ACCESS;
@@ -580,26 +516,18 @@ impl NulinkUsbHandle {
 
             let count = bytes_remaining / 4;
 
-            self.usb_init_buffer(8 + 12 * count);
-            // set command ID
-            self.cmdbuf[self.cmdidx..self.cmdidx+4].copy_from_slice((commands::WRITE_RAM as u32).to_le_bytes());
-            self.cmdidx += 4;
-            self.cmdbuf[self.cmdidx] = count; // Count of registers
-            self.cmdidx += 1;
-            self.cmdbuf[self.cmdidx] = 0xFF; // Array of bool value (u8ReadOld)
-            self.cmdidx += 1;
-            self.cmdbuf[self.cmdidx] = 0x00; // Array of bool value (u8Verify)
-            self.cmdidx += 1;
-            self.cmdbuf[self.cmdidx] = 0; // ignore
-            self.cmdidx += 1;
+            let cmdidx = self.usb_init_buffer(8 + 12 * count);
+			let mut cmdbuf = Cursor::new(&mut self.cmdbuf[cmdidx..]);
+			cmdbuf.iowrite_with(commands::WRITE_RAM as u32, LE).unwrap(); // set command ID
+			cmdbuf.iowrite(count as u8).unwrap(); // Count of registers
+            cmdbuf.iowrite(0xFF_u8).unwrap(); // Array of bool value (u8ReadOld)
+            cmdbuf.iowrite(0x00_u8).unwrap(); // Array of bool value (u8Verify)
+            cmdbuf.iowrite(0_u8).unwrap(); // ignore
 
             for i in 0..count {
-                self.cmdbuf[self.cmdidx..self.cmdidx+4].copy_from_slice(addr.to_le_bytes()); // u32Addr
-                self.cmdidx += 4;
-                self.cmdbuf[self.cmdidx..self.cmdidx+4].copy_from_slice(0.to_le_bytes()); // u32Data
-                self.cmdidx += 4;
-                self.cmdbuf[self.cmdidx..self.cmdidx+4].copy_from_slice(0xFFFFFFFF.to_le_bytes()); // u32Mask
-                self.cmdidx += 4;
+				cmdbuf.iowrite_with(addr, LE).unwrap(); // u32Addr
+                cmdbuf.iowrite_with(0_u32, LE).unwrap(); // u32Data
+                cmdbuf.iowrite_with(0xFFFFFFFF_u32, LE).unwrap(); // u32Mask
                 addr += 4; // proceed to the next one
             }
 
@@ -626,7 +554,7 @@ impl NulinkUsbHandle {
         let mut res = Ok(());
         let bytes_remaining = 12;
 
-        /* data must be a multiple of 4 and word aligned */
+        // data must be a multiple of 4 and word aligned
         if (len % 4 || addr % 4) != 0 {
             error!("Invalid data alignment");
             return ERROR_TARGET_UNALIGNED_ACCESS;
@@ -639,36 +567,21 @@ impl NulinkUsbHandle {
 
             let count = bytes_remaining / 4;
 
-            self.usb_init_buffer(8 + 12 * count);
-            /* set command ID */
-            h_u32_to_le(self.cmdbuf + self.cmdidx, commands::WRITE_RAM);
-            self.cmdidx += 4;
-            /* Count of registers */
-            self.cmdbuf[self.cmdidx] = count;
-            self.cmdidx += 1;
-            /* Array of bool value (u8ReadOld) */
-            self.cmdbuf[self.cmdidx] = 0x00;
-            self.cmdidx += 1;
-            /* Array of bool value (u8Verify) */
-            self.cmdbuf[self.cmdidx] = 0x00;
-            self.cmdidx += 1;
-            /* ignore */
-            self.cmdbuf[self.cmdidx] = 0;
-            self.cmdidx += 1;
+            let cmdidx = self.usb_init_buffer(8 + 12 * count);
+			let mut cmdbuf = Cursor::new(&mut self.cmdbuf[cmdidx..]);
+			cmdbuf.iowrite_with(commands::WRITE_RAM, LE).unwrap(); // set command ID
+			cmdbuf.iowrite(count as u8).unwrap(); // Count of registers
+			cmdbuf.iowrite(0x00_u8).unwrap(); // Array of bool value (u8ReadOld)
+			cmdbuf.iowrite(0x00_u8).unwrap(); // Array of bool value (u8Verify)
+            cmdbuf.iowrite(0_u8).unwrap(); // ignore
 
             for i in 0..count {
-                /* u32Addr */
-                h_u32_to_le(self.cmdbuf + self.cmdidx, addr);
-                self.cmdidx += 4;
-                /* u32Data */
+				cmdbuf.iowrite_with(addr, LE).unwrap(); // u32Addr
                 let u32buffer = buf_get_u32(buffer, 0, 32);
-                h_u32_to_le(self.cmdbuf + self.cmdidx, u32buffer);
-                self.cmdidx += 4;
-                /* u32Mask */
-                h_u32_to_le(self.cmdbuf + self.cmdidx, 0x00000000);
-                self.cmdidx += 4;
+                cmdbuf.iowrite_with(u32buffer, LE).unwrap(); // u32Data
+                cmdbuf.iowrite_with(0x00000000_u32, LE).unwrap(); // u32Mask
 
-                /* proceed to the next one */
+                // proceed to the next one
                 addr += 4;
                 buffer += 4;
             }
@@ -825,25 +738,14 @@ impl NulinkUsbHandle {
         debug!("Nu-Link nulink_speed: {}", max_ice_clock);
 
         if !query {
-            self.usb_init_buffer(4 * 6);
-            /* set command ID */
-            h_u32_to_le(self.cmdbuf + self.cmdidx, commands::SET_CONFIG);
-            self.cmdidx += 4;
-            /* set max SWD clock */
-            h_u32_to_le(self.cmdbuf + self.cmdidx, max_ice_clock);
-            self.cmdidx += 4;
-            /* chip type: NUC_CHIP_TYPE_GENERAL_V6M */
-            h_u32_to_le(self.cmdbuf + self.cmdidx, 0);
-            self.cmdidx += 4;
-            /* IO voltage */
-            h_u32_to_le(self.cmdbuf + self.cmdidx, 5000);
-            self.cmdidx += 4;
-            /* If supply voltage to target or not */
-            h_u32_to_le(self.cmdbuf + self.cmdidx, 0);
-            self.cmdidx += 4;
-            /* USB_FUNC_E: USB_FUNC_HID_BULK */
-            h_u32_to_le(self.cmdbuf + self.cmdidx, 2);
-            self.cmdidx += 4;
+            let cmdidx = self.usb_init_buffer(4 * 6);
+			let mut cmdbuf = Cursor::new(&mut self.cmdbuf[cmdidx..]);
+			cmdbuf.iowrite_with(commands::SET_CONFIG, LE).unwrap(); // set command ID
+            cmdbuf.iowrite_with(max_ice_clock as u32, LE).unwrap(); // set max SWD clock
+            cmdbuf.iowrite_with(0_u32, LE).unwrap(); // chip type: NUC_CHIP_TYPE_GENERAL_V6M
+            cmdbuf.iowrite_with(5000_u32, LE).unwrap(); // IO voltage
+            cmdbuf.iowrite_with(0_u32, LE).unwrap(); // If supply voltage to target or not
+            cmdbuf.iowrite_with(2_u32, LE).unwrap(); // USB_FUNC_E: USB_FUNC_HID_BULK
 
             let databuf = self.usb_xfer(4 * 3).unwrap();
 
