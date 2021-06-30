@@ -185,7 +185,7 @@ fn nulink2_usb_init_buffer(handle: &mut NulinkUsbHandle, size: usize) -> usize {
     handle.cmdbuf[0] = 0; /* report number */
     handle.usbcmdidx += 1;
     handle.cmdbuf[1] = handle.usbcmdidx & 0x7F;
-    handle.cmdbuf.pwrite_with(2, size, LE).unwrap();
+    handle.cmdbuf.pwrite_with(size, 2, LE).unwrap();
     4
 }
 
@@ -210,7 +210,7 @@ impl NulinkUsbHandle {
         let cmdidx = self.usb_init_buffer(V6M_MAX_COMMAND_LENGTH);
         self.cmdbuf[cmdidx..V6M_MAX_COMMAND_LENGTH + cmdidx].fill(0xFF);
 
-        self.cmdbuf[cmdidx + 4] = 0xA1;        /* host_rev_num: 6561 */
+        self.cmdbuf[cmdidx + 4] = 0xA1; /* host_rev_num: 6561 */
         self.cmdbuf[cmdidx + 5] = 0x19;
 
         let databuf = self.usb_xfer(self.cmdsize)?;
@@ -242,7 +242,7 @@ impl NulinkUsbHandle {
 
         let cmdidx = self.usb_init_buffer(4 * 1);
         self.cmdbuf
-            .pwrite_with(cmdidx, commands::CHECK_ID, LE)
+            .pwrite_with(commands::CHECK_ID, cmdidx, LE)
             .unwrap(); // set command ID
 
         let databuf = self.usb_xfer(4 * 2)?;
@@ -274,7 +274,7 @@ impl NulinkUsbHandle {
     pub fn usb_state(&mut self) -> TargetState {
         let cmdidx = self.usb_init_buffer(4 * 1);
         self.cmdbuf
-            .pwrite_with(cmdidx, commands::CHECK_MCU_STOP, LE); // set command ID
+            .pwrite_with(commands::CHECK_MCU_STOP, cmdidx, LE); // set command ID
 
         if let Ok(databuf) = self.usb_xfer(4 * 4).is_err() {
             if databuf.pread_with::<u32>(8, LE).unwrap() == 0 {
@@ -318,7 +318,7 @@ impl NulinkUsbHandle {
 
         let cmdidx = self.usb_init_buffer(4 * 1);
         self.cmdbuf
-            .pwrite_with(cmdidx, commands::MCU_FREE_RUN, LE)
+            .pwrite_with(commands::MCU_FREE_RUN, cmdidx, LE)
             .unwrap(); // set command ID
 
         self.usb_xfer(4 * 4)
@@ -329,7 +329,7 @@ impl NulinkUsbHandle {
 
         let cmdidx = self.usb_init_buffer(4 * 1);
         self.cmdbuf
-            .pwrite_with(cmdidx, commands::MCU_STOP_RUN, LE)
+            .pwrite_with(commands::MCU_STOP_RUN, cmdidx, LE)
             .unwrap(); // set command ID
 
         let databuf = self.usb_xfer(4 * 4)?;
@@ -347,7 +347,7 @@ impl NulinkUsbHandle {
 
         let cmdidx = self.usb_init_buffer(4 * 1);
         self.cmdbuf
-            .pwrite_with(cmdidx, commands::MCU_STEP_RUN, LE)
+            .pwrite_with(commands::MCU_STEP_RUN, cmdidx, LE)
             .unwrap(); // set command ID
 
         let databuf = self.usb_xfer(4 * 4)?;
