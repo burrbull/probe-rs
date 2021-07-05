@@ -52,7 +52,7 @@ const NULINK_READ_TIMEOUT: i32 = 1000;
 const NULINK_HID_MAX_SIZE: usize = 64;
 const NULINK2_HID_MAX_SIZE: usize = 1024;
 const V6M_MAX_COMMAND_LENGTH: usize = NULINK_HID_MAX_SIZE - 2;
-const V7M_MAX_COMMAND_LENGTH: usize = NULINK_HID_MAX_SIZE - 3;
+const V7M_MAX_COMMAND_LENGTH: usize = NULINK2_HID_MAX_SIZE - 3;
 
 const NULINK2_USB_PID1: u16 = 0x5200;
 const NULINK2_USB_PID2: u16 = 0x5201;
@@ -161,13 +161,13 @@ impl NulinkUsbHandle {
 fn nulink1_usb_xfer(handle: &mut NulinkUsbHandle, _cmdsize: usize) -> Result<&[u8], NulinkError> {
     handle.usb_xfer_rw(handle.tempbuf)?;
 
-    &mut h.tempbuf[2..NULINK_HID_MAX_SIZE]
+    &mut h.tempbuf[2..handle.max_packet_size]
 }
 
 fn nulink2_usb_xfer(handle: &mut NulinkUsbHandle, _cmdsize: usize) -> Result<&[u8], NulinkError> {
     handle.usb_xfer_rw(handle.tempbuf)?;
 
-    &mut h.tempbuf[3..NULINK_HID_MAX_SIZE] // TODO: check
+    &mut h.tempbuf[3..handle.max_packet_size]
 }
 
 fn nulink1_usb_init_buffer(handle: &mut NulinkUsbHandle, size: usize) -> usize {
@@ -413,6 +413,7 @@ impl NulinkUsbHandle {
             addr = aligned_addr;
         }
 
+        let mut len = buffer.len();
         while len != 0 {
             if len < bytes_remaining {
                 bytes_remaining = len;
@@ -476,6 +477,7 @@ impl NulinkUsbHandle {
             addr = aligned_addr;
         }
 
+        let mut len = buffer.len();
         while len != 0 {
             if len < bytes_remaining {
                 bytes_remaining = len;
@@ -527,7 +529,7 @@ impl NulinkUsbHandle {
 
                 // proceed to the next one
                 addr += 4;
-                buffer += 4;
+                buffer = &buffer[4..];
             }
 
             self.usb_xfer(4 * count * 2)?;
@@ -550,6 +552,7 @@ impl NulinkUsbHandle {
             return ERROR_TARGET_UNALIGNED_ACCESS;
         }
 
+        let mut len = buffer.len();
         while len != 0 {
             if len < bytes_remaining {
                 bytes_remaining = len;
@@ -601,6 +604,7 @@ impl NulinkUsbHandle {
             return ERROR_TARGET_UNALIGNED_ACCESS;
         }
 
+        let mut len = buffer.len();
         while len != 0 {
             if len < bytes_remaining {
                 bytes_remaining = len;
@@ -749,7 +753,7 @@ impl NulinkUsbHandle {
                 if addr % 4 != 0 {
                     let head_bytes = 4 - (addr % 4);
                     self.usb_write_mem8(addr, head_bytes, buffer)?;
-                    buffer += head_bytes;
+                    buffer = &buffer[head_bytes..];
                     addr += head_bytes;
                     count -= head_bytes;
                     bytes_remaining -= head_bytes;
@@ -758,13 +762,13 @@ impl NulinkUsbHandle {
                 if bytes_remaining % 4 != 0 {
                     self.usb_write_mem(addr, 1, bytes_remaining, buffer)?;
                 } else {
-                    self.usb_write_mem32(addr, bytes_remaining, buffer)?;
+                    self.usb_write_mem32(addr, &buffer[..bytes_remaining])?;
                 }
             } else {
-                self.usb_write_mem8(addr, bytes_remaining, buffer)?;
+                self.usb_write_mem8(addr, &buffer[..bytes_remaining])?;
             }
 
-            buffer += bytes_remaining;
+            buffer = &buffer[bytes_remaining..];
             addr += bytes_remaining;
             count -= bytes_remaining;
         }
@@ -772,7 +776,7 @@ impl NulinkUsbHandle {
         Ok(())
     }
 
-    pub fn speed(&mut self, khz: i32, query: bool) -> u64 {
+    pub fn speed(&mut self, khz: u32, query: bool) -> u32 {
         debug!("nulink_speed: query {}", if query { "yes" } else { "no" });
 
         let max_ice_clock = if khz > 12000 {
@@ -780,9 +784,9 @@ impl NulinkUsbHandle {
         } else if (khz == 3 * 512) || (khz == 1500) {
             1500
         } else if khz >= 1000 {
-            khz / 1000 * 1000 as u64
+            khz / 1000 * 1000 as u32
         } else {
-            khz / 100 * 100 as u64
+            khz / 100 * 100 as u32
         };
 
         debug!("Nu-Link nulink_speed: {}", max_ice_clock);
@@ -791,7 +795,7 @@ impl NulinkUsbHandle {
             let cmdidx = self.usb_init_buffer(4 * 6);
             let mut cmdbuf = Cursor::new(&mut self.cmdbuf[cmdidx..]);
             cmdbuf.iowrite_with(commands::SET_CONFIG, LE)?; // set command ID
-            cmdbuf.iowrite_with(max_ice_clock as u32, LE)?; // set max SWD clock
+            cmdbuf.iowrite_with(max_ice_clock, LE)?; // set max SWD clock
             cmdbuf.iowrite_with(0_u32, LE)?; // chip type: NUC_CHIP_TYPE_GENERAL_V6M
             cmdbuf.iowrite_with(5000_u32, LE)?; // IO voltage
             cmdbuf.iowrite_with(0_u32, LE)?; // If supply voltage to target or not
