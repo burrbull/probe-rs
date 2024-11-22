@@ -330,7 +330,7 @@ pub fn open_device_from_selector(
 /// in them. As devices spell CMSIS DAP differently we go through known
 /// spellings/patterns looking for a match
 fn is_cmsis_dap(id: &str) -> bool {
-    id.contains("CMSIS-DAP") || id.contains("CMSIS_DAP")
+    id.contains("CMSIS-DAP") || id.contains("CMSIS_DAP") || id == "WCH-Link"
 }
 
 /// Some devices don't have a CMSIS-DAP interface string, but are still
